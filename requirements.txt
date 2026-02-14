@@ -1,2 +1,4 @@
-flet==0.80.0
-plyer==2.1.0
+flet
+requests
+python-dotenv
+plyer

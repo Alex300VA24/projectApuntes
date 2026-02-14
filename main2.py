@@ -1,13 +1,35 @@
+"""
+MAIN.PY - OPTIMIZADO CON SINCRONIZACIÓN MANUAL
+Basado en el diseño responsive de main.py
+Mantiene sincronización MANUAL con Google Sheets
+"""
+
 import flet as ft
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import threading
-import time
-from plyer import notification
+import requests
+from dotenv import load_dotenv
+import os
+
+# ========== CONFIGURACIÓN ==========
+load_dotenv()
+GOOGLE_SHEETS_URL = os.getenv('GOOGLE_SHEETS_URL', '')
+
+# ========== COLORES ==========
+COLORES_PROYECTO = {
+    "Rojo": ft.Colors.RED_400,
+    "Azul": ft.Colors.BLUE_400,
+    "Verde": ft.Colors.GREEN_400,
+    "Amarillo": ft.Colors.AMBER_400,
+    "Púrpura": ft.Colors.PURPLE_400,
+    "Rosa": ft.Colors.PINK_400,
+}
+
+# ========== MODELOS ==========
 
 class Tarea:
-    """Modelo de datos para una tarea"""
     def __init__(self, id, titulo, descripcion, fecha_creacion, proyecto_id, 
                  completada=False, fecha_programada=None, notificacion_enviada=False, prioridad="Media"):
         self.id = id
@@ -35,20 +57,24 @@ class Tarea:
     
     @staticmethod
     def from_dict(data):
-        return Tarea(
-            data['id'],
-            data['titulo'],
-            data['descripcion'],
-            data['fecha_creacion'],
-            data['proyecto_id'],
-            data.get('completada', False),
-            data.get('fecha_programada'),
-            data.get('notificacion_enviada', False),
-            data.get('prioridad', 'Media')
-        )
+        try:
+            return Tarea(
+                int(data['id']),  # Convertir a int para evitar errores de comparación
+                data['titulo'],
+                data['descripcion'],
+                data['fecha_creacion'],
+                int(data['proyecto_id']),  # También convertir proyecto_id
+                data.get('completada', False),
+                data.get('fecha_programada'),
+                data.get('notificacion_enviada', False),
+                data.get('prioridad', 'Media')
+            )
+        except (ValueError, TypeError, KeyError) as e:
+            # Si hay error de conversión, asignar IDs por defecto y retornar
+            print(f"⚠️ Advertencia al convertir Tarea: {e}. Usando valores por defecto.")
+            return None  # Mejor ignorar registros corruptos
 
 class Proyecto:
-    """Modelo de datos para un proyecto"""
     def __init__(self, id, nombre, descripcion, color, fecha_creacion):
         self.id = id
         self.nombre = nombre
@@ -67,16 +93,22 @@ class Proyecto:
     
     @staticmethod
     def from_dict(data):
-        return Proyecto(
-            data['id'],
-            data['nombre'],
-            data['descripcion'],
-            data['color'],
-            data['fecha_creacion']
-        )
+        try:
+            return Proyecto(
+                int(data['id']),  # Convertir a int para evitar errores de comparación
+                data['nombre'],
+                data['descripcion'],
+                data['color'],
+                data['fecha_creacion']
+            )
+        except (ValueError, TypeError, KeyError) as e:
+            # Si hay error de conversión, ignorar el registro
+            print(f"⚠️ Advertencia al convertir Proyecto: {e}. Usando valores por defecto.")
+            return None  # Mejor ignorar registros corruptos
+
+# ========== GESTOR DE DATOS (SOLO LOCAL) ==========
 
 class GestorDatos:
-    """Gestor de proyectos y tareas con persistencia en JSON"""
     def __init__(self):
         self.archivo_proyectos = Path("proyectos.json")
         self.archivo_tareas = Path("tareas.json")
@@ -103,9 +135,16 @@ class GestorDatos:
         with open(self.archivo_tareas, 'w', encoding='utf-8') as f:
             json.dump([t.to_dict() for t in self.tareas], f, indent=2, ensure_ascii=False)
     
-    # Métodos de Proyectos
     def agregar_proyecto(self, nombre, descripcion, color):
-        nuevo_id = max([p.id for p in self.proyectos], default=0) + 1
+        # Convertir todos los IDs a int, ignorar los que no sean válidos
+        ids = []
+        for p in self.proyectos:
+            try:
+                ids.append(int(p.id))
+            except (ValueError, TypeError):
+                # Ignorar IDs que no se puedan convertir
+                pass
+        nuevo_id = max(ids, default=0) + 1
         fecha = datetime.now().strftime("%Y-%m-%d %H:%M")
         proyecto = Proyecto(nuevo_id, nombre, descripcion, color, fecha)
         self.proyectos.append(proyecto)
@@ -123,7 +162,6 @@ class GestorDatos:
         return False
     
     def eliminar_proyecto(self, id):
-        # Eliminar también todas las tareas del proyecto
         self.tareas = [t for t in self.tareas if t.proyecto_id != id]
         self.proyectos = [p for p in self.proyectos if p.id != id]
         self.guardar_proyectos()
@@ -135,11 +173,18 @@ class GestorDatos:
                 return proyecto
         return None
     
-    # Métodos de Tareas
     def agregar_tarea(self, titulo, descripcion, proyecto_id, fecha_programada=None, prioridad="Media"):
-        nuevo_id = max([t.id for t in self.tareas], default=0) + 1
+        # Convertir todos los IDs a int, ignorar los que no sean válidos
+        ids = []
+        for t in self.tareas:
+            try:
+                ids.append(int(t.id))
+            except (ValueError, TypeError):
+                # Ignorar IDs que no se puedan convertir
+                pass
+        nuevo_id = max(ids, default=0) + 1
         fecha = datetime.now().strftime("%Y-%m-%d %H:%M")
-        tarea = Tarea(nuevo_id, titulo, descripcion, fecha, proyecto_id, 
+        tarea = Tarea(nuevo_id, titulo, descripcion, fecha, int(proyecto_id), 
                      fecha_programada=fecha_programada, prioridad=prioridad)
         self.tareas.append(tarea)
         self.guardar_tareas()
@@ -166,101 +211,90 @@ class GestorDatos:
             if tarea.id == id:
                 tarea.completada = not tarea.completada
                 self.guardar_tareas()
-                return tarea.completada
-        return None
+                return
     
     def obtener_tareas_proyecto(self, proyecto_id):
         return [t for t in self.tareas if t.proyecto_id == proyecto_id]
-    
-    def marcar_notificacion_enviada(self, tarea_id):
-        for tarea in self.tareas:
-            if tarea.id == tarea_id:
-                tarea.notificacion_enviada = True
-                self.guardar_tareas()
-                break
 
-class NotificadorTareas:
-    """Servicio de notificaciones en segundo plano"""
-    def __init__(self, gestor):
-        self.gestor = gestor
-        self.activo = True
-        self.thread = None
+# ========== CLIENTE SINCRONIZACIÓN ==========
+
+class ClienteSincronizacion:
+    def __init__(self, url_sheets):
+        self.url = url_sheets
     
-    def iniciar(self):
-        self.thread = threading.Thread(target=self._verificar_notificaciones, daemon=True)
-        self.thread.start()
+    def traer_proyectos(self):
+        try:
+            if not self.url:
+                return None
+            response = requests.get(self.url + "?path=proyectos", timeout=10)
+            if response.status_code == 200:
+                datos = response.json()
+                # El API devuelve {proyectos: [...]} así que accedemos a la lista correctamente
+                proyectos_lista = datos.get("proyectos", [])
+                # Filtrar None (registros con IDs corruptos)
+                proyectos = [Proyecto.from_dict(p) for p in proyectos_lista]
+                return [p for p in proyectos if p is not None]
+        except Exception as e:
+            print(f"❌ Error traer_proyectos: {e}")
+        return None
     
-    def detener(self):
-        self.activo = False
+    def traer_tareas(self):
+        try:
+            if not self.url:
+                return None
+            response = requests.get(self.url + "?path=tareas", timeout=10)
+            if response.status_code == 200:
+                datos = response.json()
+                # El API devuelve {tareas: [...]} así que accedemos a la lista correctamente
+                tareas_lista = datos.get("tareas", [])
+                # Filtrar None (registros con IDs corruptos)
+                tareas = [Tarea.from_dict(t) for t in tareas_lista]
+                return [t for t in tareas if t is not None]
+        except Exception as e:
+            print(f"❌ Error traer_tareas: {e}")
+        return None
     
-    def _verificar_notificaciones(self):
-        while self.activo:
-            try:
-                ahora = datetime.now()
-                for tarea in self.gestor.tareas:
-                    if (not tarea.completada and 
-                        tarea.fecha_programada and 
-                        not tarea.notificacion_enviada):
-                        
-                        fecha_prog = datetime.strptime(tarea.fecha_programada, "%Y-%m-%d %H:%M")
-                        
-                        # Notificar si ya pasó la hora o está dentro de los próximos 5 minutos
-                        if ahora >= fecha_prog or (fecha_prog - ahora).total_seconds() <= 300:
-                            proyecto = self.gestor.obtener_proyecto(tarea.proyecto_id)
-                            proyecto_nombre = proyecto.nombre if proyecto else "Sin proyecto"
-                            
-                            try:
-                                notification.notify(
-                                    title=f"⏰ Recordatorio: {tarea.titulo}",
-                                    message=f"Proyecto: {proyecto_nombre}\n{tarea.descripcion[:100]}",
-                                    app_name="Agenda de Proyectos",
-                                    timeout=10
-                                )
-                                self.gestor.marcar_notificacion_enviada(tarea.id)
-                            except Exception as e:
-                                print(f"Error al enviar notificación: {e}")
-                
-                time.sleep(60)  # Verificar cada minuto
-            except Exception as e:
-                print(f"Error en verificación de notificaciones: {e}")
-                time.sleep(60)
+    def enviar_proyecto(self, proyecto):
+        try:
+            response = requests.post(self.url + "?path=proyectos", json=proyecto.to_dict(), timeout=10)
+            return response.status_code == 200
+        except Exception as e:
+            print(f"❌ Error enviar_proyecto: {e}")
+            return False
+    
+    def enviar_tarea(self, tarea):
+        try:
+            response = requests.post(self.url + "?path=tareas", json=tarea.to_dict(), timeout=10)
+            return response.status_code == 200
+        except Exception as e:
+            print(f"❌ Error enviar_tarea: {e}")
+            return False
+
+# ========== APLICACIÓN FLET ==========
 
 def main(page: ft.Page):
-    page.title = "Agenda de Proyectos y Tareas"
-    page.window_width = 1100
-    page.window_height = 750
-    page.padding = 20
-    page.theme_mode = ft.ThemeMode.LIGHT
+    page.title = "Agenda de Proyectos"
+    page.vertical_alignment = ft.MainAxisAlignment.START
+    page.horizontal_alignment = ft.CrossAxisAlignment.START
     
+    # ========== ESTADO GLOBAL ==========
     gestor = GestorDatos()
-    notificador = NotificadorTareas(gestor)
-    notificador.iniciar()
-    
-    # Estado de la aplicación
+    cliente_sync = ClienteSincronizacion(GOOGLE_SHEETS_URL) if GOOGLE_SHEETS_URL else None
     proyecto_seleccionado = None
-    tarea_editando = None
     proyecto_editando = None
+    tarea_editando = None
     
-    # Colores disponibles para proyectos
-    COLORES_PROYECTO = {
-        "Azul": ft.Colors.BLUE_400,
-        "Verde": ft.Colors.GREEN_400,
-        "Naranja": ft.Colors.ORANGE_400,
-        "Rojo": ft.Colors.RED_400,
-        "Morado": ft.Colors.PURPLE_400,
-        "Cyan": ft.Colors.CYAN_400,
-        "Rosa": ft.Colors.PINK_400,
-        "Amarillo": ft.Colors.AMBER_400,
-    }
+    lbl_estado_sync = ft.Text("📂 Datos en local", size=11, color=ft.Colors.GREY_600)
     
     # ========== FORMULARIOS DE PROYECTO ==========
     proyecto_nombre_field = ft.TextField(label="Nombre del proyecto", filled=True, expand=True)
     proyecto_desc_field = ft.TextField(label="Descripción", multiline=True, min_lines=2, filled=True)
     proyecto_color_dropdown = ft.Dropdown(
         label="Color",
-        options=[ft.dropdown.Option(c) for c in COLORES_PROYECTO.keys()],
+        options=[ft.dropdown.Option(color) for color in COLORES_PROYECTO.keys()],
         value="Azul",
-        filled=True
+        filled=True,
+        width=150
     )
     
     def cerrar_dialogo_proyecto(e):
@@ -268,6 +302,7 @@ def main(page: ft.Page):
         page.update()
     
     def guardar_proyecto(e):
+        nonlocal proyecto_editando
         if not proyecto_nombre_field.value or not proyecto_nombre_field.value.strip():
             proyecto_nombre_field.error_text = "El nombre es requerido"
             page.update()
@@ -301,8 +336,7 @@ def main(page: ft.Page):
                 proyecto_desc_field,
                 proyecto_color_dropdown,
             ], tight=True, spacing=15),
-            # Ancho flexible pero limitado
-            width=min(500, page.window_width - 50) if page.window_width else 500,
+            width=500,
         ),
         actions=[
             ft.TextButton("Cancelar", on_click=cerrar_dialogo_proyecto),
@@ -316,10 +350,9 @@ def main(page: ft.Page):
         nonlocal proyecto_editando
         proyecto_editando = proyecto
         
-        # Actualizar ancho al abrir
         if dialogo_proyecto.content:
-             dialogo_proyecto.content.width = min(500, page.window_width - 50) if page.window_width else 500
-
+            dialogo_proyecto.content.width = min(500, page.width - 50) if page.width else 500
+        
         if proyecto:
             dialogo_proyecto.title = ft.Text("Editar Proyecto")
             proyecto_nombre_field.value = proyecto.nombre
@@ -340,35 +373,21 @@ def main(page: ft.Page):
     tarea_desc_field = ft.TextField(label="Descripción", multiline=True, min_lines=3, filled=True)
     tarea_prioridad_dropdown = ft.Dropdown(
         label="Prioridad",
-        options=[
-            ft.dropdown.Option("Alta"),
-            ft.dropdown.Option("Media"),
-            ft.dropdown.Option("Baja"),
-        ],
+        options=[ft.dropdown.Option("Alta"), ft.dropdown.Option("Media"), ft.dropdown.Option("Baja")],
         value="Media",
         filled=True,
         width=150
     )
     
-    # Campos para fecha y hora programada
-    fecha_programada_field = ft.TextField(
-        label="Fecha (YYYY-MM-DD)",
-        hint_text="2025-01-15",
-        filled=True,
-        width=200
-    )
-    hora_programada_field = ft.TextField(
-        label="Hora (HH:MM)",
-        hint_text="14:30",
-        filled=True,
-        width=150
-    )
+    fecha_programada_field = ft.TextField(label="Fecha (YYYY-MM-DD)", hint_text="2025-01-15", filled=True, width=200)
+    hora_programada_field = ft.TextField(label="Hora (HH:MM)", hint_text="14:30", filled=True, width=150)
     
     def cerrar_dialogo_tarea(e):
         dialogo_tarea.open = False
         page.update()
     
     def guardar_tarea(e):
+        nonlocal proyecto_seleccionado
         if not tarea_titulo_field.value or not tarea_titulo_field.value.strip():
             tarea_titulo_field.error_text = "El título es requerido"
             page.update()
@@ -379,12 +398,10 @@ def main(page: ft.Page):
         
         tarea_titulo_field.error_text = None
         
-        # Construir fecha programada si hay valores
         fecha_prog = None
         if fecha_programada_field.value and hora_programada_field.value:
             try:
                 fecha_prog = f"{fecha_programada_field.value.strip()} {hora_programada_field.value.strip()}"
-                # Validar formato
                 datetime.strptime(fecha_prog, "%Y-%m-%d %H:%M")
             except:
                 fecha_programada_field.error_text = "Formato inválido"
@@ -411,6 +428,7 @@ def main(page: ft.Page):
         
         cerrar_dialogo_tarea(e)
         actualizar_tareas()
+        actualizar_proyectos()
     
     dialogo_tarea = ft.AlertDialog(
         modal=True,
@@ -423,9 +441,7 @@ def main(page: ft.Page):
                 ft.Text("Programar notificación (opcional):", size=12, weight=ft.FontWeight.BOLD),
                 ft.Row([fecha_programada_field, hora_programada_field], spacing=10, wrap=True),
             ], tight=True, spacing=15, scroll=ft.ScrollMode.AUTO),
-            width=min(550, page.window_width - 50) if page.window_width else 550,
-            # Altura máxima para evitar desbordamiento vertical en móviles apaisados
-            height=min(600, page.window_height - 100) if page.window_height else None, 
+            width=550,
         ),
         actions=[
             ft.TextButton("Cancelar", on_click=cerrar_dialogo_tarea),
@@ -438,12 +454,11 @@ def main(page: ft.Page):
     def abrir_formulario_tarea(tarea=None):
         nonlocal tarea_editando
         tarea_editando = tarea
-
-        # Actualizar dimensiones al abrir
+        
         if dialogo_tarea.content:
-            dialogo_tarea.content.width = min(550, page.window_width - 50) if page.window_width else 550
-            if page.window_height:
-                dialogo_tarea.content.height = min(600, page.window_height - 100)
+            dialogo_tarea.content.width = min(550, page.width - 50) if page.width else 550
+            if page.height:
+                dialogo_tarea.content.height = min(600, page.height - 100)
         
         if tarea:
             dialogo_tarea.title = ft.Text("Editar Tarea")
@@ -457,12 +472,15 @@ def main(page: ft.Page):
             else:
                 fecha_programada_field.value = ""
                 hora_programada_field.value = ""
+            
+            tarea_prioridad_dropdown.value = tarea.prioridad
         else:
             dialogo_tarea.title = ft.Text("Nueva Tarea")
             tarea_titulo_field.value = ""
             tarea_desc_field.value = ""
             fecha_programada_field.value = ""
             hora_programada_field.value = ""
+            tarea_prioridad_dropdown.value = "Media"
         
         tarea_titulo_field.error_text = None
         fecha_programada_field.error_text = None
@@ -470,6 +488,7 @@ def main(page: ft.Page):
         page.update()
     
     # ========== VISTA DE PROYECTOS ==========
+    
     def crear_tarjeta_proyecto(proyecto):
         tareas_proyecto = gestor.obtener_tareas_proyecto(proyecto.id)
         total = len(tareas_proyecto)
@@ -505,8 +524,7 @@ def main(page: ft.Page):
                 content=ft.Text(f"¿Eliminar el proyecto '{proyecto.nombre}' y todas sus tareas?"),
                 actions=[
                     ft.TextButton("Cancelar", on_click=cancelar),
-                    ft.FilledButton("Eliminar", on_click=confirmar,
-                                   style=ft.ButtonStyle(bgcolor=ft.Colors.RED_400)),
+                    ft.FilledButton("Eliminar", on_click=confirmar, style=ft.ButtonStyle(bgcolor=ft.Colors.RED_400)),
                 ],
             )
             page.overlay.append(dialogo_conf)
@@ -521,30 +539,18 @@ def main(page: ft.Page):
                 content=ft.Container(
                     content=ft.Column([
                         ft.Row([
-                            ft.Container(
-                                width=4, 
-                                height=40, 
-                                bgcolor=color_proyecto, 
-                                border_radius=2
-                            ),
+                            ft.Container(width=4, height=40, bgcolor=color_proyecto, border_radius=2),
                             ft.Column([
                                 ft.Text(proyecto.nombre, size=15, weight=ft.FontWeight.BOLD),
                                 ft.Row([
                                     ft.Text(f"{completadas}/{total}", size=11, color=ft.Colors.GREY_600, weight=ft.FontWeight.BOLD),
                                     ft.Text(f"tareas completadas", size=11, color=ft.Colors.GREY_600),
                                 ], spacing=4),
-                                ft.ProgressBar(
-                                    value=progreso, 
-                                    color=color_proyecto, 
-                                    bgcolor=ft.Colors.GREY_200, 
-                                    height=4,
-                                    border_radius=2
-                                ),
+                                ft.ProgressBar(value=progreso, color=color_proyecto, bgcolor=ft.Colors.GREY_200, height=4, border_radius=2),
                             ], spacing=4, expand=True),
                             ft.Column([
                                 ft.IconButton(icon=ft.Icons.EDIT, icon_size=18, on_click=editar_proyecto, tooltip="Editar"),
-                                ft.IconButton(icon=ft.Icons.DELETE, icon_size=18, 
-                                            icon_color=ft.Colors.RED_400, on_click=eliminar_proyecto, tooltip="Eliminar"),
+                                ft.IconButton(icon=ft.Icons.DELETE, icon_size=18, icon_color=ft.Colors.RED_400, on_click=eliminar_proyecto, tooltip="Eliminar"),
                             ], spacing=0, alignment=ft.MainAxisAlignment.CENTER),
                         ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     ], spacing=5),
@@ -577,6 +583,7 @@ def main(page: ft.Page):
         page.update()
     
     # ========== VISTA DE TAREAS ==========
+    
     def crear_tarjeta_tarea(tarea):
         def toggle_check(e):
             gestor.toggle_completada(tarea.id)
@@ -603,15 +610,13 @@ def main(page: ft.Page):
                 content=ft.Text(f"¿Eliminar la tarea '{tarea.titulo}'?"),
                 actions=[
                     ft.TextButton("Cancelar", on_click=cancelar),
-                    ft.FilledButton("Eliminar", on_click=confirmar,
-                                   style=ft.ButtonStyle(bgcolor=ft.Colors.RED_400)),
+                    ft.FilledButton("Eliminar", on_click=confirmar, style=ft.ButtonStyle(bgcolor=ft.Colors.RED_400)),
                 ],
             )
             page.overlay.append(dialogo_conf)
             dialogo_conf.open = True
             page.update()
         
-        # Mostrar icono de notificación si está programada
         notif_icon = None
         if tarea.fecha_programada:
             notif_icon = ft.Icon(
@@ -631,12 +636,10 @@ def main(page: ft.Page):
                                 tarea.titulo,
                                 size=15,
                                 weight=ft.FontWeight.BOLD,
-                                expand=True,  # Ocupar espacio disponible
-                                max_lines=2,  # Máximo 2 líneas
-                                overflow=ft.TextOverflow.ELLIPSIS,  # Puntos suspensivos si excede
-                                style=ft.TextStyle(
-                                    decoration=ft.TextDecoration.LINE_THROUGH if tarea.completada else None
-                                )
+                                expand=True,
+                                max_lines=2,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                                style=ft.TextStyle(decoration=ft.TextDecoration.LINE_THROUGH if tarea.completada else None)
                             ),
                             notif_icon if notif_icon else ft.Container(),
                         ], spacing=8),
@@ -645,16 +648,14 @@ def main(page: ft.Page):
                             size=12,
                             color=ft.Colors.GREY_700,
                             italic=not tarea.descripcion,
-                            max_lines=3,  # Limitar líneas de descripción
+                            max_lines=3,
                             overflow=ft.TextOverflow.ELLIPSIS
                         ),
                         ft.Text(f"Creada: {tarea.fecha_creacion}", size=10, color=ft.Colors.GREY_500),
                     ], spacing=3, expand=True),
                     ft.Row([
-                        ft.IconButton(icon=ft.Icons.EDIT, icon_size=20, 
-                                    icon_color=ft.Colors.BLUE_400, on_click=editar_click),
-                        ft.IconButton(icon=ft.Icons.DELETE, icon_size=20,
-                                    icon_color=ft.Colors.RED_400, on_click=eliminar_click),
+                        ft.IconButton(icon=ft.Icons.EDIT, icon_size=20, icon_color=ft.Colors.BLUE_400, on_click=editar_click),
+                        ft.IconButton(icon=ft.Icons.DELETE, icon_size=20, icon_color=ft.Colors.RED_400, on_click=eliminar_click),
                     ], spacing=0),
                 ], alignment=ft.MainAxisAlignment.START),
                 padding=12,
@@ -662,37 +663,15 @@ def main(page: ft.Page):
             elevation=1,
         )
     
-    # Botón volver para móvil
     def volver_a_proyectos(e):
         nonlocal proyecto_seleccionado
         proyecto_seleccionado = None
         actualizar_tareas()
         actualizar_layout()
-
-    boton_volver = ft.IconButton(
-        icon=ft.Icons.ARROW_BACK,
-        icon_size=24,
-        on_click=volver_a_proyectos,
-        visible=False,
-        tooltip="Volver a proyectos"
-    )
-
-    # Botón de nueva tarea (creado una vez para poder actualizarlo)
-    boton_nueva_tarea = ft.FilledButton(
-        "Nueva Tarea",
-        icon=ft.Icons.ADD,
-        on_click=lambda e: abrir_formulario_tarea(),
-        disabled=True,
-    )
-
-    # Botón flotante para móvil
-    fab_nueva_tarea = ft.FloatingActionButton(
-        icon=ft.Icons.ADD,
-        on_click=lambda e: abrir_formulario_tarea(),
-        bgcolor=ft.Colors.BLUE_400,
-    )
     
-    # Título dinámico del panel de tareas
+    boton_volver = ft.IconButton(icon=ft.Icons.ARROW_BACK, icon_size=24, on_click=volver_a_proyectos, visible=False, tooltip="Volver a proyectos")
+    boton_nueva_tarea = ft.FilledButton("Nueva Tarea", icon=ft.Icons.ADD, on_click=lambda e: abrir_formulario_tarea(), disabled=True)
+    fab_nueva_tarea = ft.FloatingActionButton(icon=ft.Icons.ADD, on_click=lambda e: abrir_formulario_tarea(), bgcolor=ft.Colors.BLUE_400)
     titulo_tareas = ft.Text("Tareas", size=22, weight=ft.FontWeight.BOLD)
     
     lista_tareas = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
@@ -702,40 +681,31 @@ def main(page: ft.Page):
         
         if not proyecto_seleccionado:
             boton_nueva_tarea.disabled = True
+            fab_nueva_tarea.disabled = True
             titulo_tareas.value = "Tareas"
             lista_tareas.controls.append(
                 ft.Container(
-                    content=ft.Column(
-                        [
-                            ft.Icon(ft.Icons.FOLDER_OPEN, size=80, color=ft.Colors.GREY_300),
-                            ft.Text("Selecciona un proyecto", size=16, color=ft.Colors.GREY_500),
-                        ],
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        spacing=10,
-                        alignment=ft.MainAxisAlignment.CENTER,  # centra verticalmente
-                    ),
+                    content=ft.Column([
+                        ft.Icon(ft.Icons.FOLDER_OPEN, size=80, color=ft.Colors.GREY_300),
+                        ft.Text("Selecciona un proyecto", size=16, color=ft.Colors.GREY_500),
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=10, alignment=ft.MainAxisAlignment.CENTER),
                     expand=True,
                 )
             )
         else:
             boton_nueva_tarea.disabled = False
-            fab_nueva_tarea.disabled = False # Habilitar FAB también
+            fab_nueva_tarea.disabled = False
             titulo_tareas.value = proyecto_seleccionado.nombre
             tareas = gestor.obtener_tareas_proyecto(proyecto_seleccionado.id)
             
             if not tareas:
                 lista_tareas.controls.append(
                     ft.Container(
-                        content=ft.Column(
-                            [
-                                ft.Icon(ft.Icons.CHECK_CIRCLE, size=80, color=ft.Colors.GREY_300),
-                                ft.Text("No hay tareas en este proyecto", size=16, color=ft.Colors.GREY_500),
-                                ft.Text("Haz clic en '+' para agregar", size=12, color=ft.Colors.GREY_400),
-                            ],
-                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                            spacing=8,
-                            alignment=ft.MainAxisAlignment.CENTER,  # centra verticalmente
-                        ),
+                        content=ft.Column([
+                            ft.Icon(ft.Icons.CHECK_CIRCLE, size=80, color=ft.Colors.GREY_300),
+                            ft.Text("No hay tareas en este proyecto", size=16, color=ft.Colors.GREY_500),
+                            ft.Text("Haz clic en '+' para agregar", size=12, color=ft.Colors.GREY_400),
+                        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8, alignment=ft.MainAxisAlignment.CENTER),
                         expand=True,
                     )
                 )
@@ -746,19 +716,106 @@ def main(page: ft.Page):
         
         page.update()
     
-    # ========== DEFINICIÓN DE PANELES ==========
+    # ========== SINCRONIZACIÓN MANUAL ==========
     
-    # Panel izquierdo - Proyectos
+    def sincronizar_traer(e):
+        if not cliente_sync:
+            lbl_estado_sync.value = "❌ Google Sheets no configurado"
+            lbl_estado_sync.color = ft.Colors.RED_500
+            page.update()
+            return
+        
+        lbl_estado_sync.value = "📡 Descargando..."
+        lbl_estado_sync.color = ft.Colors.BLUE_500
+        page.update()
+        
+        def bg():
+            try:
+                p = cliente_sync.traer_proyectos()
+                t = cliente_sync.traer_tareas()
+                
+                # MERGE inteligente: agregar nuevos sin perder lo local
+                if p:
+                    # Obtener IDs existentes localmente
+                    ids_locales = {int(proy.id) for proy in gestor.proyectos}
+                    for proyecto_sheets in p:
+                        proyecto_id = int(proyecto_sheets.id)
+                        # Si no existe localmente, agregarlo
+                        if proyecto_id not in ids_locales:
+                            gestor.proyectos.append(proyecto_sheets)
+                    gestor.guardar_proyectos()
+                
+                if t:
+                    # Obtener IDs existentes localmente
+                    ids_locales = {int(tarea.id) for tarea in gestor.tareas}
+                    for tarea_sheets in t:
+                        tarea_id = int(tarea_sheets.id)
+                        # Si no existe localmente, agregarlo
+                        if tarea_id not in ids_locales:
+                            gestor.tareas.append(tarea_sheets)
+                    gestor.guardar_tareas()
+                
+                lbl_estado_sync.value = "✓ Descargado"
+                lbl_estado_sync.color = ft.Colors.GREEN
+                actualizar_proyectos()
+                actualizar_tareas()
+            except Exception as ex:
+                print(f"❌ Error en sincronizar_traer: {ex}")
+                lbl_estado_sync.value = f"❌ Error"
+                lbl_estado_sync.color = ft.Colors.RED_500
+            page.update()
+        
+        threading.Thread(target=bg, daemon=True).start()
+    
+    def sincronizar_guardar(e):
+        if not cliente_sync:
+            lbl_estado_sync.value = "❌ Google Sheets no configurado"
+            lbl_estado_sync.color = ft.Colors.RED_500
+            page.update()
+            return
+        
+        lbl_estado_sync.value = "📡 Guardando..."
+        lbl_estado_sync.color = ft.Colors.BLUE_500
+        page.update()
+        
+        def bg():
+            try:
+                # Primero traer lo que existe en Sheets para no duplicar
+                proyectos_sheets = cliente_sync.traer_proyectos() or []
+                tareas_sheets = cliente_sync.traer_tareas() or []
+                
+                ids_proyectos_sheets = {int(p.id) for p in proyectos_sheets}
+                ids_tareas_sheets = {int(t.id) for t in tareas_sheets}
+                
+                # Enviar solo los proyectos nuevos
+                for p in gestor.proyectos:
+                    if int(p.id) not in ids_proyectos_sheets:
+                        cliente_sync.enviar_proyecto(p)
+                
+                # Enviar solo las tareas nuevas
+                for t in gestor.tareas:
+                    if int(t.id) not in ids_tareas_sheets:
+                        cliente_sync.enviar_tarea(t)
+                
+                lbl_estado_sync.value = "✓ Guardado"
+                lbl_estado_sync.color = ft.Colors.GREEN
+            except Exception as ex:
+                print(f"❌ Error en sincronizar_guardar: {ex}")
+                lbl_estado_sync.value = f"❌ Error"
+                lbl_estado_sync.color = ft.Colors.RED_500
+            page.update()
+        
+        threading.Thread(target=bg, daemon=True).start()
+    
+    # ========== PANELES PRINCIPALES ==========
+    
     panel_proyectos = ft.Container(
         content=ft.Column([
             ft.Row([
                 ft.Text("Proyectos", size=20, weight=ft.FontWeight.BOLD),
-                ft.IconButton(
-                    icon=ft.Icons.ADD,
-                    icon_size=20,
-                    tooltip="Nuevo Proyecto",
-                    on_click=lambda e: abrir_formulario_proyecto(),
-                ),
+                ft.IconButton(icon=ft.Icons.ADD, icon_size=20, tooltip="Nuevo Proyecto", on_click=lambda e: abrir_formulario_proyecto()),
+                ft.IconButton(icon=ft.Icons.SAVE, icon_size=20, tooltip="Guardar en Sheets", on_click=sincronizar_guardar),
+                ft.IconButton(icon=ft.Icons.SYNC_ROUNDED, icon_size=20, tooltip="Traer de Sheets", on_click=sincronizar_traer)
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             ft.Divider(height=1),
             ft.Container(content=lista_proyectos, expand=True),
@@ -767,16 +824,16 @@ def main(page: ft.Page):
         padding=15,
         bgcolor=ft.Colors.GREY_100,
         border_radius=10,
-        expand=False, 
+        expand=False,
     )
     
-    # Panel derecho - Tareas
     panel_tareas = ft.Container(
         content=ft.Column([
             ft.Row([
                 boton_volver,
                 ft.Icon(ft.Icons.LIST_ALT, size=28, color=ft.Colors.BLUE_400),
-                ft.Container(content=titulo_tareas, expand=True), # Título envuelto para expandir
+                ft.Container(content=titulo_tareas, expand=True),
+                ft.Container(content=lbl_estado_sync, expand=True),
                 boton_nueva_tarea,
             ], alignment=ft.MainAxisAlignment.START),
             ft.Divider(height=1),
@@ -786,37 +843,30 @@ def main(page: ft.Page):
         expand=True,
     )
     
-    # Layout principal
     layout_principal = ft.Row([panel_proyectos, panel_tareas], spacing=15, expand=True)
-    page.add(layout_principal)
     
-    # ========== LÓGICA RESPONSIVE ==========
+    # ========== RESPONSIVE ==========
+    
     def actualizar_layout(e=None):
-        # Definir punto de quiebre para móvil (ej. 800px)
         is_mobile = page.width < 800 if page.width else False
         
-        # Actualizar dimensiones de diálogos si están abiertos
         if dialogo_proyecto.open and dialogo_proyecto.content:
-             dialogo_proyecto.content.width = min(500, page.window_width - 50) if page.window_width else 500
+            dialogo_proyecto.content.width = min(500, page.width - 50) if page.width else 500
         
         if dialogo_tarea.open and dialogo_tarea.content:
-             dialogo_tarea.content.width = min(550, page.window_width - 50) if page.window_width else 550
-             if page.window_height:
-                 dialogo_tarea.content.height = min(600, page.window_height - 100)
-
+            dialogo_tarea.content.width = min(550, page.width - 50) if page.width else 550
+            if page.height:
+                dialogo_tarea.content.height = min(600, page.height - 100)
+        
         if is_mobile:
-            # Modo Móvil
-            panel_proyectos.width = None 
+            panel_proyectos.width = None
             panel_proyectos.expand = True
-            
-            # Ocultar botón "Nueva Tarea" normal en móvil
             boton_nueva_tarea.visible = False
             
             if proyecto_seleccionado:
                 panel_proyectos.visible = False
                 panel_tareas.visible = True
                 boton_volver.visible = True
-                # Mostrar FAB en móvil cuando hay proyecto seleccionado
                 page.floating_action_button = fab_nueva_tarea
             else:
                 panel_proyectos.visible = True
@@ -824,31 +874,24 @@ def main(page: ft.Page):
                 boton_volver.visible = False
                 page.floating_action_button = None
         else:
-            # Modo Desktop
             panel_proyectos.width = 300
             panel_proyectos.expand = False
             panel_proyectos.visible = True
             panel_tareas.visible = True
             boton_volver.visible = False
-            # Mostrar botón normal y ocultar FAB
             boton_nueva_tarea.visible = True
             page.floating_action_button = None
-            
+        
         page.update()
-
-    page.on_resize = actualizar_layout
-    actualizar_layout()
     
+    page.on_resize = actualizar_layout
+    
+    # ========== AGREGAR A LA PÁGINA ==========
+    page.add(layout_principal)
+    
+    actualizar_layout()
     actualizar_proyectos()
     actualizar_tareas()
-    
-    # Manejar cierre de ventana
-    def window_event(e):
-        if e.data == "close":
-            notificador.detener()
-            page.window_destroy()
-    
-    page.window_prevent_close = True
-    page.on_window_event = window_event
 
-ft.run(main)
+if __name__ == "__main__":
+    ft.run(main)
